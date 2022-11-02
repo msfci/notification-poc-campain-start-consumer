@@ -1,0 +1,18 @@
+[package]
+name = "notification-poc-campain-start-consumer"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rdkafka = { version = "0.25", features = ["cmake-build"] }
+rbatis = "4.0.39"
+rbdc = { version = "0.1", default-features = false }
+rbdc-oracle = "0.1.1"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }
+rbs = { version = "0.1"}
+tinytemplate = "1.1"
+
+
