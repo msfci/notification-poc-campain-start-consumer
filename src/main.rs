@@ -2,30 +2,33 @@
 extern crate rbatis;
 extern crate rbdc;
 
-use std::{error::Error, time::Duration};
+use std::{error::Error, time::{Duration, Instant}, sync::{Mutex, Arc}, thread, vec};
 
-use rbatis::{Rbatis, sql::PageRequest};
+use rbatis::{Rbatis};
 use rbdc_oracle::{driver::OracleDriver, options::OracleConnectOptions};
-use rdkafka::{producer::{BaseProducer, BaseRecord, Producer}, ClientConfig};
+use rdkafka::{producer::{FutureProducer, FutureRecord, self}, ClientConfig};
 use serde::{Deserialize, Serialize};
 use tinytemplate::TinyTemplate;
-
+use rayon::prelude::*;
+use tokio::runtime::Runtime;
 
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Customer {
-    pub msisdn: String,
-    pub name: String,
-    pub segment: String,
-    pub balance: f32
+    pub msisdn: Option<String>,
+    pub name: Option<String>,
+    pub segment: Option<String>,
+    pub balance: Option<String>
 }
 
 crud!(Customer {});
-impl_select_page!(Customer{select_page() =>"
-     if !sql.contains('count'):
-       `order by msisdn desc`"});
 
-static TEMPLATE : &'static str = "Hello ${name} , your mobile ${msisdnn} , earned ${half_balance} points for Amla elolal service call *911# to run";
+#[py_sql(
+    "`SELECT * from CUSTOMER` 
+    ` ORDER BY msisdn OFFSET ${page_no} ROWS FETCH NEXT ${page_size} ROWS ONLY`")]
+async fn select_page(rb: &mut dyn rbatis::executor::Executor, page_no:u64, page_size:u64) -> std::result::Result<Vec<Customer>, rbdc::Error> {impled!()}
+
+static TEMPLATE : &'static str = "Hello {name}, your mobile {msisdn}, earned {half_balance} points for Amla elolal service call *911# to run";
 
 #[derive(Serialize)]
 struct Context {
@@ -34,13 +37,23 @@ struct Context {
     half_balance: f32
 }
 
+async fn produce(producer: &FutureProducer, topic_name: &str, message: &str, key: &str) {
+    let _delivery_status = producer
+        .send(
+            FutureRecord::to(topic_name)
+                .payload(&format!("{}", message))
+                .key(&format!("{}", key)),
+                Duration::from_secs(0),
+        )
+        .await;
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>>{
     let mut rb = Rbatis::new();
 
-    let mut tt = TinyTemplate::new();
-    tt.add_template("offer", TEMPLATE)?;
-
+    let start = Instant::now();
+    
     rb.init_opt(
         OracleDriver {},
         OracleConnectOptions {
@@ -51,43 +64,53 @@ async fn main() -> Result<(), Box<dyn Error>>{
     )
     .expect("rbatis link database fail");
 
-    let producer: BaseProducer = ClientConfig::new()
+    let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", "localhost:9092")
         .create()
         .expect("Producer creation error");
-    
-    let page_size = 10;
 
-    for page in 0..5 {
+    let count = 1000000;
+    let page_size = 10000;
+
+    let pages = count / page_size;
+
+    for page in 0..pages {
         let data = 
-            Customer::select_page(&mut rb, &PageRequest::new(page, page_size))
+            select_page(&mut rb, page*page_size, page_size)
             .await
             .unwrap();
+    
+        data.into_par_iter()
+        .for_each(|customer| {
+            let producer = producer.clone();
 
-        for record in data.records.iter() {
-            let context = Context {
-                name: record.name.clone(),
-                msisdn: record.msisdn.clone(),
-                half_balance: record.balance * 0.5
-            };
-            let rendered = tt.render("offer", &context)?;
+            let mut tt = TinyTemplate::new();
+            tt.add_template("offer", TEMPLATE).unwrap();
             
-            producer.send(
-                BaseRecord::to("offer_message")
-                    .payload(&rendered)
-                    .key(&record.msisdn),
-            ).expect("Failed to enqueue");
+            let context = Context {
+                name: customer.name.clone().unwrap(),
+                msisdn: customer.msisdn.clone().unwrap(),
+                half_balance: customer.balance.clone().unwrap().parse::<f32>().unwrap() * 0.5
+            };
 
-        }
+            let rendered = tt.render("offer", &context).unwrap();
+
+            println!("Message: {}", rendered);
+        
+            let rt = Runtime::new().unwrap();
+            let handle = rt.handle().clone();
+            handle.block_on(
+                producer
+                .send(FutureRecord::to("offer_message")
+                    .payload(&format!("{}", &rendered))
+                    .key(&format!("{}", &customer.msisdn.clone().unwrap())),Duration::from_secs(0)
+                )
+            ).unwrap();
+                // produce(producer, "offer_message", &rendered, &customer.msisdn.clone().unwrap()).await;
+        });
     }
+    let duration = start.elapsed();
 
-    // Poll at regular intervals to process all the asynchronous delivery events.
-    for _ in 0..10 {
-        producer.poll(Duration::from_millis(100));
-    }
-
-    // And/or flush the producer before dropping it.
-    producer.flush(Duration::from_secs(1));
-
+    println!("Time elapsed in expensive_function() is: {:?}", duration);
     Ok(())
 }
