@@ -10,7 +10,7 @@ use rdkafka::{producer::{FutureProducer, FutureRecord, self}, ClientConfig};
 use serde::{Deserialize, Serialize};
 use tinytemplate::TinyTemplate;
 use rayon::prelude::*;
-use tokio::runtime::Runtime;
+use tokio::{runtime::Runtime, spawn};
 
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -51,7 +51,7 @@ async fn produce(producer: &FutureProducer, topic_name: &str, message: &str, key
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>>{
     let mut rb = Rbatis::new();
-
+    rayon::ThreadPoolBuilder::new().num_threads(100).build_global().unwrap();
     let start = Instant::now();
     
     rb.init_opt(
@@ -72,16 +72,18 @@ async fn main() -> Result<(), Box<dyn Error>>{
     let count = 1000000;
     let page_size = 10000;
 
-    let pages = count / page_size;
+    let no_of_pages = count / page_size;
 
-    for page in 0..pages {
-        let data = 
+    (0..no_of_pages).into_par_iter().for_each(|page| {
+        let mut rb = rb.clone();
+        let rt = Runtime::new().unwrap();
+        let handle = rt.handle().clone();
+        let data = handle.block_on(
             select_page(&mut rb, page*page_size, page_size)
-            .await
-            .unwrap();
+        ).unwrap();
     
-        data.into_par_iter()
-        .for_each(|customer| {
+        data.into_iter()
+        .for_each( |customer| {
             let producer = producer.clone();
 
             let mut tt = TinyTemplate::new();
@@ -96,19 +98,17 @@ async fn main() -> Result<(), Box<dyn Error>>{
             let rendered = tt.render("offer", &context).unwrap();
 
             println!("Message: {}", rendered);
-        
-            let rt = Runtime::new().unwrap();
-            let handle = rt.handle().clone();
-            handle.block_on(
-                producer
-                .send(FutureRecord::to("offer_message")
-                    .payload(&format!("{}", &rendered))
-                    .key(&format!("{}", &customer.msisdn.clone().unwrap())),Duration::from_secs(0)
-                )
-            ).unwrap();
-                // produce(producer, "offer_message", &rendered, &customer.msisdn.clone().unwrap()).await;
+    
+            rayon::spawn(move || {
+                let rt = Runtime::new().unwrap();
+                let handle = rt.handle().clone();
+                handle.block_on(
+                    produce(&producer, "offer_message", &rendered, &customer.msisdn.clone().unwrap())
+                );
+            });
+            // produce(producer, "offer_message", &rendered, &customer.msisdn.clone().unwrap()).await;
         });
-    }
+    });
     let duration = start.elapsed();
 
     println!("Time elapsed in expensive_function() is: {:?}", duration);
