@@ -2,15 +2,15 @@
 extern crate rbatis;
 extern crate rbdc;
 
-use std::{error::Error, time::{Duration, Instant}, sync::{Mutex, Arc}, thread, vec};
+use std::{error::Error, time::{Duration, Instant}};
 
 use rbatis::{Rbatis};
 use rbdc_oracle::{driver::OracleDriver, options::OracleConnectOptions};
-use rdkafka::{producer::{FutureProducer, FutureRecord, self}, ClientConfig};
+use rdkafka::{producer::{FutureProducer, FutureRecord}, ClientConfig};
 use serde::{Deserialize, Serialize};
 use tinytemplate::TinyTemplate;
 use rayon::prelude::*;
-use tokio::{runtime::Runtime, spawn};
+use tokio::{runtime::Runtime};
 
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -97,16 +97,15 @@ async fn main() -> Result<(), Box<dyn Error>>{
 
             let rendered = tt.render("offer", &context).unwrap();
 
-            println!("Message: {}", rendered);
+            // println!("Message: {}", rendered);
     
             rayon::spawn(move || {
                 let rt = Runtime::new().unwrap();
                 let handle = rt.handle().clone();
                 handle.block_on(
-                    produce(&producer, "offer_message", &rendered, &customer.msisdn.clone().unwrap())
+                    produce(&producer, "offer_message_new", &rendered, &customer.msisdn.clone().unwrap())
                 );
             });
-            // produce(producer, "offer_message", &rendered, &customer.msisdn.clone().unwrap()).await;
         });
     });
     let duration = start.elapsed();
